@@ -20,6 +20,50 @@
 #include "hwjs.h"
 #include "ws2812.h" // 彩灯模块
 #include "pwm.h"    // 电机PWM模块
+#include "math.h"   // 数学函数支持
+
+// 音符频率定义（Hz）
+#define NOTE_C4 262
+#define NOTE_D4 294
+#define NOTE_E4 330
+#define NOTE_F4 349
+#define NOTE_G4 392
+#define NOTE_A4 440
+#define NOTE_B4 494
+#define NOTE_C5 523
+#define NOTE_D5 587
+#define NOTE_E5 659
+#define NOTE_F5 698
+#define NOTE_G5 784
+#define NOTE_A5 880
+#define NOTE_B5 988
+#define NOTE_REST 0 // 休止符
+
+// 节拍时长定义（毫秒）
+#define BEAT_WHOLE 1000  // 全音符
+#define BEAT_HALF 500    // 二分音符
+#define BEAT_QUARTER 250 // 四分音符
+#define BEAT_EIGHTH 125  // 八分音符
+
+// 音乐播放状态定义
+#define MUSIC_STOPPED 0
+#define MUSIC_PLAYING 1
+#define MUSIC_PAUSED 2
+
+// 音符结构体
+typedef struct
+{
+    u16 frequency; // 音符频率
+    u16 duration;  // 音符时长（毫秒）
+} Note;
+
+// 歌曲结构体
+typedef struct
+{
+    const char *name;  // 歌曲名称
+    const Note *notes; // 音符数组
+    u16 note_count;    // 音符数量
+} Song;
 
 // 系统状态定义
 #define STATE_NORMAL 0
@@ -42,7 +86,7 @@
 #define IR_KEYa 0x00FFA25D // 按键开关的编码
 #define IR_KEYb 0x00FF629D // 按键mode的编码
 #define IR_KEYc 0x00FFE21D // 按键静音的编码
-#define IR_KEYd 0x00FF22DD // 按键快进的编码
+#define IR_KEYd 0x00FF22DD // 按键播放/暂停的编码
 #define IR_KEYe 0x00FF02FD // 按键上一首的编码
 #define IR_KEYf 0x00FFC23D // 按键下一首的编码
 #define IR_KEYg 0x00FFE01F // 按键EQ的编码
@@ -124,6 +168,40 @@ u8 led_showing = 0;         // 彩灯显示状态
 #define EVENT_STAGE_COMPLETE 3 // 事件完成
 u8 event_stage = 0;            // 当前事件阶段
 
+// 音乐播放控制变量
+u8 music_state = MUSIC_STOPPED; // 音乐播放状态
+u8 current_song = 0;            // 当前歌曲索引
+u16 current_note = 0;           // 当前音符索引
+u32 note_timer = 0;             // 音符播放计时器
+u8 music_volume = 5;            // 音量等级（1-10）
+
+// 音符频率控制变量
+u32 freq_counter = 0;       // 频率计数器(微秒)
+u16 current_frequency = 0;  // 当前播放的音符频率
+u32 freq_toggle_period = 0; // 频率切换周期(微秒)
+u8 beep_toggle = 0;         // 蜂鸣器切换状态
+
+// 歌曲数据定义
+// 小星星 (Twinkle Twinkle Little Star)
+const Note twinkle_notes[] = {
+    {NOTE_C4, BEAT_QUARTER}, {NOTE_C4, BEAT_QUARTER}, {NOTE_G4, BEAT_QUARTER}, {NOTE_G4, BEAT_QUARTER}, {NOTE_A4, BEAT_QUARTER}, {NOTE_A4, BEAT_QUARTER}, {NOTE_G4, BEAT_HALF}, {NOTE_F4, BEAT_QUARTER}, {NOTE_F4, BEAT_QUARTER}, {NOTE_E4, BEAT_QUARTER}, {NOTE_E4, BEAT_QUARTER}, {NOTE_D4, BEAT_QUARTER}, {NOTE_D4, BEAT_QUARTER}, {NOTE_C4, BEAT_HALF}, {NOTE_G4, BEAT_QUARTER}, {NOTE_G4, BEAT_QUARTER}, {NOTE_F4, BEAT_QUARTER}, {NOTE_F4, BEAT_QUARTER}, {NOTE_E4, BEAT_QUARTER}, {NOTE_E4, BEAT_QUARTER}, {NOTE_D4, BEAT_HALF}, {NOTE_G4, BEAT_QUARTER}, {NOTE_G4, BEAT_QUARTER}, {NOTE_F4, BEAT_QUARTER}, {NOTE_F4, BEAT_QUARTER}, {NOTE_E4, BEAT_QUARTER}, {NOTE_E4, BEAT_QUARTER}, {NOTE_D4, BEAT_HALF}};
+
+// 生日快乐歌 (Happy Birthday)
+const Note birthday_notes[] = {
+    {NOTE_C4, BEAT_QUARTER}, {NOTE_C4, BEAT_EIGHTH}, {NOTE_D4, BEAT_QUARTER}, {NOTE_C4, BEAT_QUARTER}, {NOTE_F4, BEAT_QUARTER}, {NOTE_E4, BEAT_HALF}, {NOTE_C4, BEAT_QUARTER}, {NOTE_C4, BEAT_EIGHTH}, {NOTE_D4, BEAT_QUARTER}, {NOTE_C4, BEAT_QUARTER}, {NOTE_G4, BEAT_QUARTER}, {NOTE_F4, BEAT_HALF}, {NOTE_C4, BEAT_QUARTER}, {NOTE_C4, BEAT_EIGHTH}, {NOTE_C5, BEAT_QUARTER}, {NOTE_A4, BEAT_QUARTER}, {NOTE_F4, BEAT_QUARTER}, {NOTE_E4, BEAT_QUARTER}, {NOTE_D4, BEAT_HALF}, {NOTE_B4, BEAT_QUARTER}, {NOTE_B4, BEAT_EIGHTH}, {NOTE_A4, BEAT_QUARTER}, {NOTE_F4, BEAT_QUARTER}, {NOTE_G4, BEAT_QUARTER}, {NOTE_F4, BEAT_HALF}};
+
+// 欢乐颂简化版 (Ode to Joy)
+const Note ode_notes[] = {
+    {NOTE_E4, BEAT_QUARTER}, {NOTE_E4, BEAT_QUARTER}, {NOTE_F4, BEAT_QUARTER}, {NOTE_G4, BEAT_QUARTER}, {NOTE_G4, BEAT_QUARTER}, {NOTE_F4, BEAT_QUARTER}, {NOTE_E4, BEAT_QUARTER}, {NOTE_D4, BEAT_QUARTER}, {NOTE_C4, BEAT_QUARTER}, {NOTE_C4, BEAT_QUARTER}, {NOTE_D4, BEAT_QUARTER}, {NOTE_E4, BEAT_QUARTER}, {NOTE_E4, BEAT_QUARTER + BEAT_EIGHTH}, {NOTE_D4, BEAT_EIGHTH}, {NOTE_D4, BEAT_HALF}, {NOTE_E4, BEAT_QUARTER}, {NOTE_E4, BEAT_QUARTER}, {NOTE_F4, BEAT_QUARTER}, {NOTE_G4, BEAT_QUARTER}, {NOTE_G4, BEAT_QUARTER}, {NOTE_F4, BEAT_QUARTER}, {NOTE_E4, BEAT_QUARTER}, {NOTE_D4, BEAT_QUARTER}, {NOTE_C4, BEAT_QUARTER}, {NOTE_C4, BEAT_QUARTER}, {NOTE_D4, BEAT_QUARTER}, {NOTE_E4, BEAT_QUARTER}, {NOTE_D4, BEAT_QUARTER + BEAT_EIGHTH}, {NOTE_C4, BEAT_EIGHTH}, {NOTE_C4, BEAT_HALF}};
+
+// 歌曲列表
+const Song songs[] = {
+    {"Twinkle Star", twinkle_notes, sizeof(twinkle_notes) / sizeof(Note)},
+    {"Happy Birthday", birthday_notes, sizeof(birthday_notes) / sizeof(Note)},
+    {"Ode to Joy", ode_notes, sizeof(ode_notes) / sizeof(Note)}};
+
+#define SONG_COUNT (sizeof(songs) / sizeof(Song))
+
 // 函数声明
 void show_home_screen(void);
 void show_medication_screen(void);
@@ -141,6 +219,18 @@ void update_light_threshold(void);       // 更新光强阈值
 void process_medicine_box_control(void); // 处理药盒控制逻辑
 void start_medicine_box(u8 box_number);  // 启动指定药盒
 void stop_medicine_box(void);            // 停止药盒操作
+
+// 音乐播放函数声明
+void music_play_pause(void);                 // 播放/暂停音乐
+void music_next_song(void);                  // 下一首歌
+void music_prev_song(void);                  // 上一首歌
+void music_volume_up(void);                  // 音量增加
+void music_volume_down(void);                // 音量减少
+void music_stop(void);                       // 停止音乐
+void play_note(u16 frequency, u16 duration); // 播放音符
+void process_music_control(void);            // 处理音乐播放逻辑
+void process_music_frequency(void);          // 处理音符频率生成
+void show_music_info(void);                  // 显示音乐信息
 
 // 系统初始化函数
 void system_init(void)
@@ -567,7 +657,6 @@ void show_home_screen(void)
     char time_str[20];
     char med_info[40];
     char env_status[30];
-    char light_str[20];
     // 只在需要时清屏和重绘
     if (force_refresh || last_screen != 0)
     {
@@ -578,7 +667,7 @@ void show_home_screen(void)
 
         FRONT_COLOR = BLACK;
         LCD_ShowString(20, 200, 200, 16, 16, (u8 *)"KEY0:Medicine KEY1:Env");
-        LCD_ShowString(20, 220, 200, 16, 16, (u8 *)"KEY2:Send KEY_UP:Role/Return");
+        LCD_ShowString(20, 220, 200, 16, 16, (u8 *)"KEY2:Music KEY_UP:Role/Return");
 
         // 显示HC05状态信息
         FRONT_COLOR = BLUE;
@@ -912,6 +1001,308 @@ void process_medicine_box_control(void)
     }
 }
 
+// 音乐播放相关函数实现
+
+// 播放音符函数
+void play_note(u16 frequency, u16 duration)
+{
+    // 所有变量声明在函数开头
+    u16 play_duration;
+    u16 silent_duration;
+    u32 period;
+    u32 half_period;
+    u32 total_cycles;
+    u32 i;
+
+    if (frequency == NOTE_REST || music_volume == 0)
+    {
+        // 休止符或静音
+        BEEP = 0;
+        return;
+    }
+
+    // 根据音量调整播放时长比例（音量1-10对应10%-100%的时长）
+    play_duration = (duration * music_volume) / 10;
+    silent_duration = duration - play_duration;
+
+    // 简单的方波生成 - 通过快速开关蜂鸣器模拟频率
+    period = 1000000 / frequency; // 微秒为单位的周期
+    half_period = period / 2;
+    total_cycles = (play_duration * 1000) / period;
+
+    for (i = 0; i < total_cycles; i++)
+    {
+        BEEP = 1;
+        delay_ms(half_period / 1000); // 转换为毫秒
+        BEEP = 0;
+        delay_ms(half_period / 1000);
+    }
+
+    // 音符间的静音间隔
+    if (silent_duration > 0)
+    {
+        BEEP = 0;
+        delay_ms(silent_duration);
+    }
+}
+
+// 播放/暂停音乐
+void music_play_pause(void)
+{
+    if (music_state == MUSIC_STOPPED)
+    {
+        // 开始播放
+        music_state = MUSIC_PLAYING;
+        current_note = 0;
+        note_timer = 0;
+        printf("Music: Playing '%s'\r\n", songs[current_song].name);
+    }
+    else if (music_state == MUSIC_PLAYING)
+    {
+        // 暂停
+        music_state = MUSIC_PAUSED;
+        BEEP = 0; // 停止当前音符
+        printf("Music: Paused\r\n");
+    }
+    else if (music_state == MUSIC_PAUSED)
+    {
+        // 恢复播放
+        music_state = MUSIC_PLAYING;
+        printf("Music: Resumed\r\n");
+    }
+}
+
+// 下一首歌
+void music_next_song(void)
+{
+    current_song = (current_song + 1) % SONG_COUNT;
+    if (music_state != MUSIC_STOPPED)
+    {
+        current_note = 0;
+        note_timer = 0;
+        music_state = MUSIC_PLAYING;
+    }
+    printf("Music: Next Song - '%s'\r\n", songs[current_song].name);
+}
+
+// 上一首歌
+void music_prev_song(void)
+{
+    current_song = (current_song + SONG_COUNT - 1) % SONG_COUNT;
+    if (music_state != MUSIC_STOPPED)
+    {
+        current_note = 0;
+        note_timer = 0;
+        music_state = MUSIC_PLAYING;
+    }
+    printf("Music: Previous Song - '%s'\r\n", songs[current_song].name);
+}
+
+// 音量增加
+void music_volume_up(void)
+{
+    if (music_volume < 10)
+    {
+        music_volume++;
+        printf("Music: Volume Up - %d/10\r\n", music_volume);
+    }
+    else
+    {
+        printf("Music: Volume Max (10/10)\r\n");
+    }
+}
+
+// 音量减少
+void music_volume_down(void)
+{
+    if (music_volume > 0)
+    {
+        music_volume--;
+        printf("Music: Volume Down - %d/10\r\n", music_volume);
+    }
+    else
+    {
+        printf("Music: Volume Min (0/10)\r\n");
+    }
+}
+
+// 停止音乐
+void music_stop(void)
+{
+    music_state = MUSIC_STOPPED;
+    current_note = 0;
+    note_timer = 0;
+    BEEP = 0;
+    printf("Music: Stopped\r\n");
+}
+
+// 处理音乐播放逻辑
+void process_music_control(void)
+{
+    // 所有变量声明在函数开头
+    const Song *song;
+    const Note *note;
+    u32 volume_threshold;
+
+    if (music_state != MUSIC_PLAYING)
+    {
+        BEEP = 0;
+        return;
+    }
+
+    song = &songs[current_song];
+
+    // 检查是否到达歌曲结尾
+    if (current_note >= song->note_count)
+    {
+        // 歌曲播放完毕，重新开始
+        current_note = 0;
+        note_timer = 0;
+        freq_counter = 0;
+        printf("Music: Song '%s' finished, restarting...\r\n", song->name);
+        return;
+    }
+
+    note_timer += 100; // 每100ms调用一次
+
+    note = &song->notes[current_note];
+
+    // 检查当前音符是否播放完毕
+    if (note_timer >= note->duration)
+    {
+        // 停止当前音符
+        BEEP = 0;
+
+        // 移动到下一个音符
+        current_note++;
+        note_timer = 0;
+        freq_counter = 0;
+
+        // 设置新音符
+        if (current_note < song->note_count)
+        {
+            note = &song->notes[current_note];
+            current_frequency = note->frequency;
+
+            if (note->frequency != NOTE_REST)
+            {
+                // 计算频率切换周期：freq Hz 需要每 1/(2*freq) 秒切换一次
+                // 转换为主循环调用次数：假设主循环每1ms调用一次 process_music_frequency
+                freq_toggle_period = 500 / note->frequency; // 以主循环调用次数为单位
+                if (freq_toggle_period == 0)
+                    freq_toggle_period = 1;
+                beep_toggle = 0;
+                printf("Music: Playing note %d Hz, period=%d\r\n", current_frequency, freq_toggle_period);
+            }
+            else
+            {
+                current_frequency = 0; // 休止符
+                printf("Music: Rest note\r\n");
+            }
+        }
+        else
+        {
+            current_frequency = 0; // 歌曲结束
+        }
+    }
+
+    // 音符播放现在由 process_music_frequency() 处理
+}
+
+// 处理音符频率生成 - 在主循环中频繁调用
+void process_music_frequency(void)
+{
+    static u32 last_toggle_time = 0;
+    u32 current_time;
+
+    if (music_state != MUSIC_PLAYING || current_frequency == 0)
+    {
+        BEEP = 0;
+        return;
+    }
+
+    // 使用系统滴答计数器获取当前时间（以毫秒为单位）
+    current_time = freq_counter;
+    freq_counter++; // 每次调用递增，模拟时间流逝
+
+    // 检查是否需要切换蜂鸣器状态
+    if (current_time - last_toggle_time >= freq_toggle_period && freq_toggle_period > 0)
+    {
+        beep_toggle = !beep_toggle;
+
+        // 音量控制：只有在音量范围内才发声
+        if (music_volume > 0)
+        {
+            BEEP = beep_toggle;
+        }
+        else
+        {
+            BEEP = 0;
+        }
+
+        last_toggle_time = current_time;
+    }
+}
+
+// 显示音乐信息
+void show_music_info(void)
+{
+    char music_info[50];
+    char volume_info[20];
+    char state_info[20];
+
+    // 只在屏幕切换时重新绘制
+    if (force_refresh || last_screen != 3)
+    {
+        LCD_Clear(LGRAY);
+        FRONT_COLOR = BLUE;
+        BACK_COLOR = LGRAY;
+        LCD_ShowString(80, 10, 200, 30, 24, (u8 *)"Music Player");
+
+        // 显示当前歌曲
+        sprintf(music_info, "Song: %s", songs[current_song].name);
+        FRONT_COLOR = BLACK;
+        LCD_ShowString(30, 60, 200, 30, 16, (u8 *)music_info);
+
+        // 显示播放状态
+        switch (music_state)
+        {
+        case MUSIC_STOPPED:
+            sprintf(state_info, "State: Stopped");
+            break;
+        case MUSIC_PLAYING:
+            sprintf(state_info, "State: Playing");
+            break;
+        case MUSIC_PAUSED:
+            sprintf(state_info, "State: Paused");
+            break;
+        }
+        LCD_ShowString(30, 90, 200, 30, 16, (u8 *)state_info);
+
+        // 显示音量
+        sprintf(volume_info, "Volume: %d/10", music_volume);
+        LCD_ShowString(30, 120, 200, 30, 16, (u8 *)volume_info);
+
+        // 显示进度
+        if (music_state != MUSIC_STOPPED)
+        {
+            sprintf(music_info, "Progress: %d/%d", current_note + 1, songs[current_song].note_count);
+            LCD_ShowString(30, 150, 200, 30, 16, (u8 *)music_info);
+        }
+
+        // 显示操作提示
+        FRONT_COLOR = BLUE;
+        LCD_ShowString(20, 190, 200, 30, 16, (u8 *)"IR Controls:");
+        FRONT_COLOR = BLACK;
+        LCD_ShowString(20, 210, 200, 30, 12, (u8 *)"Play/Pause: IR_KEYd");
+        LCD_ShowString(20, 225, 200, 30, 12, (u8 *)"Prev/Next: IR_KEYe/f");
+        LCD_ShowString(20, 240, 200, 30, 12, (u8 *)"Volume: IR_KEYh/i");
+        LCD_ShowString(20, 260, 200, 30, 16, (u8 *)"KEY_UP: Return");
+
+        last_screen = 3;
+    }
+}
+
 // main函数变量声明提前
 int main(void)
 {
@@ -971,6 +1362,7 @@ int main(void)
     LCD_ShowString(50, 120, 200, 30, 16, (u8 *)"System Starting...");
     LCD_ShowString(60, 150, 200, 30, 16, (u8 *)"Bluetooth Ready");
     LCD_ShowString(50, 180, 200, 30, 16, (u8 *)"Light Sensor Init");
+    LCD_ShowString(60, 200, 200, 30, 16, (u8 *)"Music Player Ready");
     delay_ms(2000);
 
     // 发送蓝牙连接成功消息
@@ -978,6 +1370,8 @@ int main(void)
     printf("=== Smart Medicine Box Started ===\r\n");
     printf("Light Sensor Base Value: %d%%\r\n", light_base_value);
     printf("Bluetooth Ready - Waiting for Commands...\r\n");
+    printf("Music Player: %d songs loaded, Volume: %d/10\r\n", SONG_COUNT, music_volume);
+    printf("Music Controls: Play/Pause(d), Prev(e), Next(f), Vol-(h), Vol+(i)\r\n");
 
     while (1)
     {
@@ -988,12 +1382,9 @@ int main(void)
         if (hw_jsbz) // 红外接收到一帧数据
         {
             u32 code = hw_jsm; // 读取红外码
-            u8 key_value;      // 声明提前到最前面
             hw_jsbz = 0;       // 清零标志，准备下一次接收
 
             printf("IR code: 0x%08X\r\n", code); // 串口打印，方便调试
-
-            key_value = code & 0xFF; // 取最低8位作为按键码
 
             // 根据完整的红外码匹配按键1-9
             switch (code)
@@ -1025,6 +1416,24 @@ int main(void)
             case IR_KEY9: // 按键9
                 start_medicine_box(9);
                 break;
+
+            // 音乐播放控制按键
+            case IR_KEYd: // 播放/暂停
+                music_play_pause();
+                break;
+            case IR_KEYe: // 上一首
+                music_prev_song();
+                break;
+            case IR_KEYf: // 下一首
+                music_next_song();
+                break;
+            case IR_KEYh: // 音量减少
+                music_volume_down();
+                break;
+            case IR_KEYi: // 音量增加
+                music_volume_up();
+                break;
+
             default:
                 printf("IR: Unknown key (0x%08X)\r\n", code);
                 break;
@@ -1092,22 +1501,12 @@ int main(void)
         // 处理药盒控制逻辑
         process_medicine_box_control();
 
-        // 调试信息：每10秒显示一次USART3接收状态
-        if (++debug_counter >= 100) // 100 * 100ms = 10秒
-        {
-            debug_counter = 0;
-            printf("USART3 Status: RX_STA=0x%04X, DataLen=%d\r\n",
-                   USART3_RX_STA, USART3_RX_STA & 0x7FFF);
-            if ((USART3_RX_STA & 0x7FFF) > 0)
-            {
-                printf("RX Buffer Content: ");
-                for (i = 0; i < (USART3_RX_STA & 0x7FFF) && i < 20; i++)
-                {
-                    printf("0x%02X ", USART3_RX_BUF[i]);
-                }
-                printf("\r\n");
-            }
-        }
+        // 处理音乐播放逻辑
+        process_music_control();
+
+        // 处理音乐频率生成（高频调用）
+        process_music_frequency();
+
         // 调试信息：每10秒显示一次USART3接收状态
         if (++debug_counter >= 100) // 100 * 100ms = 10秒
         {
@@ -1180,23 +1579,13 @@ int main(void)
         // 设备控制逻辑 - 区分系统警报和蓝牙控制
         if (system_state.current_state == STATE_ALARM)
         {
-            BEEP = 1;     // 蜂鸣器响
-            LED1 = !LED1; // LED闪烁(500ms周期)
-            LED2 = 0;
-            handle_medication(); // 处理服药动作
-
-            // 每5秒发送一次提醒
-            if (current_minute != last_minute)
+            // 系统警报时停止音乐播放
+            if (music_state == MUSIC_PLAYING)
             {
-                check_medication_time();
-                check_environment();
-                last_minute = current_minute;
-                force_refresh = 1; // 标记需要刷新显示
+                music_state = MUSIC_PAUSED;
+                printf("Music: Paused due to system alarm\r\n");
             }
-        }
-        // 设备控制逻辑 - 区分系统警报和蓝牙控制
-        if (system_state.current_state == STATE_ALARM)
-        {
+
             BEEP = 1;     // 蜂鸣器响
             LED1 = !LED1; // LED闪烁(500ms周期)
             LED2 = 0;
@@ -1239,13 +1628,17 @@ int main(void)
         else
         {
             // 正常状态下，根据蓝牙控制状态设置设备
-            if (system_state.bt_beep_ctrl)
+            // 如果音乐正在播放，不干扰蜂鸣器
+            if (music_state != MUSIC_PLAYING)
             {
-                BEEP = 1;
-            }
-            else
-            {
-                BEEP = 0;
+                if (system_state.bt_beep_ctrl)
+                {
+                    BEEP = 1;
+                }
+                else
+                {
+                    BEEP = 0;
+                }
             }
 
             if (system_state.bt_led1_ctrl)
@@ -1314,18 +1707,9 @@ int main(void)
             {
                 current_screen = 2;
             }
-            else if (key == KEY2_PRESS) // 新增KEY2控制蓝牙发送
+            else if (key == KEY2_PRESS) // 进入音乐播放器界面
             {
-                bt_send_mask = !bt_send_mask; // 发送/停止发送
-                if (bt_send_mask == 0)
-                {
-                    LCD_Fill(50, 160, 240, 176, WHITE); // 清除发送显示
-                    printf("BT Send: OFF\r\n");
-                }
-                else
-                {
-                    printf("BT Send: ON\r\n");
-                }
+                current_screen = 3;
             }
         }
         if (system_state.current_state == STATE_NORMAL)
@@ -1340,6 +1724,9 @@ int main(void)
                 break;
             case 2:
                 show_environment_screen();
+                break;
+            case 3:
+                show_music_info();
                 break;
             }
         }
